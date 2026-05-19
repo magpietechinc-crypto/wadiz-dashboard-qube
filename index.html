@@ -698,7 +698,8 @@ function fillMainTarget(rows, detected, totalDays) {
   const target = {
     spend: Array(totalDays).fill(0), impressions: Array(totalDays).fill(0), clicks: Array(totalDays).fill(0),
     cpa: Array(totalDays).fill(null), conversions: Array(totalDays).fill(0),
-    convRevenue: Array(totalDays).fill(0), roas: Array(totalDays).fill(null)
+    convRevenue: Array(totalDays).fill(0), roas: Array(totalDays).fill(null),
+    totalConvRevenue: Array(totalDays).fill(0)
   };
   if (detected.firstRow < 0) return target;
   for (let r = detected.firstRow; r <= detected.lastRow; r++) {
@@ -715,6 +716,8 @@ function fillMainTarget(rows, detected, totalDays) {
     target.conversions[idx] = parseNum(row[9]);
     target.convRevenue[idx] = parseNum(row[11]);
     target.roas[idx] = parseNumOrNull(row[12]);
+    // 총 전환 금액 (O열) — 광고 전환 + 오가닉 전체 매출
+    target.totalConvRevenue[idx] = parseNum(row[14]);
   }
   return target;
 }
@@ -1439,7 +1442,7 @@ function renderMain() {
       <div style="display:flex; gap:14px; justify-content:flex-end; margin-bottom:8px; font-size:11px; color:var(--text-secondary); flex-wrap:wrap;">
         <span style="display:flex; align-items:center; gap:5px;"><span style="width:9px; height:9px; background:#EF9F27; border-radius:2px;"></span>타겟 광고비</span>
         <span style="display:flex; align-items:center; gap:5px;"><span style="width:9px; height:9px; background:#534AB7; border-radius:2px;"></span>내부 광고비</span>
-        <span style="display:flex; align-items:center; gap:5px;"><span style="width:16px; height:2px; background:#185FA5;"></span>일별 매출</span>
+        <span style="display:flex; align-items:center; gap:5px;"><span style="width:16px; height:2px; background:#0F6E56;"></span>일별 매출</span>
       </div>
       <div style="position:relative; width:100%; height:240px;"><canvas id="main-daily-chart"></canvas></div>
     </div>
@@ -1674,31 +1677,25 @@ function drawMainDailyChart() {
 
   // 타겟 광고 일별 데이터
   const targetSpend = data.mainTarget.spend || [];
-  const targetRev = data.mainTarget.convRevenue || [];
+  // 일별 매출: 총 전환 금액 (광고 + 오가닉, 본펀딩_전체 시트의 O열)
+  const totalRev = data.mainTarget.totalConvRevenue || data.mainTarget.convRevenue || [];
 
-  // 내부 광고를 날짜별로 매핑 (yyyy-mm-dd → {spend, conv}
-  const internalByDate = {};
+  // 내부 광고 광고비만 날짜별 매핑 (매출은 총 전환 금액에 이미 포함됨)
+  const internalSpendByDate = {};
   (data.mainInternalAds || []).forEach(ad => {
-    // ad.date는 "2026.05.15" 형식, 시트 dates는 "2026-05-15" 형식
     const iso = ad.date.replace(/\./g, '-');
-    internalByDate[iso] = {
-      spend: ad.spend || 0,
-      revenue: ad.convRevenue || 0
-    };
+    internalSpendByDate[iso] = ad.spend || 0;
   });
 
   // 일자별 데이터 (타겟 / 내부 분리)
   const targetSpendArr = [];
   const internalSpendArr = [];
-  const combinedRev = [];
+  const dailyRev = [];
   for (let i = startIdx; i <= endIdx; i++) {
     const dateISO = data.dates[i];
-    const tSpend = targetSpend[i] || 0;
-    const tRev = targetRev[i] || 0;
-    const internal = internalByDate[dateISO] || { spend: 0, revenue: 0 };
-    targetSpendArr.push(tSpend);
-    internalSpendArr.push(internal.spend);
-    combinedRev.push(tRev + internal.revenue);
+    targetSpendArr.push(targetSpend[i] || 0);
+    internalSpendArr.push(internalSpendByDate[dateISO] || 0);
+    dailyRev.push(totalRev[i] || 0);
   }
 
   chartInstances.push(new Chart(canvas, {
@@ -1724,10 +1721,10 @@ function drawMainDailyChart() {
         },
         {
           label: '일별 매출',
-          data: combinedRev,
+          data: dailyRev,
           type: 'line',
-          borderColor: '#185FA5',
-          backgroundColor: '#185FA5',
+          borderColor: '#0F6E56',
+          backgroundColor: '#0F6E56',
           yAxisID: 'y1',
           tension: 0.3,
           pointRadius: 3,
