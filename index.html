@@ -824,15 +824,16 @@ function extractMainInternalAds(rows, detected) {
   const ads = [];
   if (detected.lastRow < 0) return ads;
 
-  // 진단용: 내부광고 영역 raw 데이터 로깅
-  console.log('[본펀딩] 시트 raw 데이터 (행 24~35):');
-  for (let r = 24; r <= 35 && r < rows.length; r++) {
+  // 진단용: 내부광고 영역 + 일별 매출 이익 영역 raw 데이터 로깅
+  console.log('[본펀딩] 시트 raw 데이터 (행 24~55):');
+  for (let r = 24; r <= 55 && r < rows.length; r++) {
     if (rows[r]) {
-      console.log(`  행${r}: [${rows[r].slice(0, 4).map(c => JSON.stringify(c)).join(' | ')}]`);
+      console.log(`  행${r}: [${rows[r].slice(0, 5).map(c => JSON.stringify(c)).join(' | ')}]`);
     }
   }
 
-  // "내부 광고 집행 일자" 헤더 검색 (반드시 "내부" + "광고" 모두 포함, 타겟광고와 구분)
+  // "내부 광고 집행 일자" 헤더 검색 — "내부광고"가 반드시 포함되어야 함
+  // (일별 매출 이익 표의 "일자"와 혼동 방지)
   let headerRow = -1;
   let labelCol = -1;
   for (let r = 0; r < rows.length; r++) {
@@ -842,21 +843,39 @@ function extractMainInternalAds(rows, detected) {
       const cell = row[c];
       if (cell == null || cell === '') continue;
       const s = String(cell).trim().replace(/\s+/g, '');
-      // "내부광고"가 반드시 포함되어야 함 (타겟광고와 혼동 방지)
-      if (s.includes('내부광고') && (s.includes('집행') || s.includes('일자'))) {
+      // 반드시 "내부광고" 키워드가 포함되어야 함 (일별 매출 이익 표와 구분)
+      if (s.includes('내부광고') && s.includes('집행')) {
         headerRow = r;
         labelCol = c;
-        console.log('[본펀딩] 헤더 매칭:', { row: r, col: c, text: cell });
+        console.log('[본펀딩] 내부광고 헤더 매칭:', { row: r, col: c, text: cell });
         break;
       }
     }
     if (headerRow >= 0) break;
   }
 
-  // 헤더 다음부터 날짜+구분 매핑 만들기
+  // "일별 매출 이익" 같은 다음 섹션 헤더의 위치 찾기 — 내부광고 영역의 끝
+  let nextSectionRow = rows.length;
+  for (let r = (headerRow >= 0 ? headerRow + 1 : detected.lastRow + 1); r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    // 행 전체를 합쳐서 검사
+    const rowText = row.map(c => c == null ? '' : String(c)).join('').replace(/\s+/g, '');
+    if (rowText.includes('일별매출이익') || rowText.includes('일별매출이익률') || 
+        rowText.includes('매출이익및매출이익률') || rowText.includes('매출이익률')) {
+      // 단, 첫 열이 날짜인 일반 데이터 행은 제외
+      if (!dateStrParse(row[0])) {
+        nextSectionRow = r;
+        console.log('[본펀딩] 다음 섹션 시작:', { row: r, text: rowText.substring(0, 50) });
+        break;
+      }
+    }
+  }
+
+  // 헤더 다음부터 nextSectionRow 직전까지 날짜+구분 매핑 만들기
   const typeByDate = {};
   if (headerRow >= 0) {
-    for (let r = headerRow + 1; r < rows.length && r <= headerRow + 20; r++) {
+    for (let r = headerRow + 1; r < nextSectionRow && r <= headerRow + 15; r++) {
       const row = rows[r];
       if (!row) continue;
       const dateISO = dateStrParse(row[labelCol]);
@@ -865,7 +884,7 @@ function extractMainInternalAds(rows, detected) {
       if (typeLabel) typeByDate[dateISO] = typeLabel;
     }
   }
-  console.log('[본펀딩] 내부광고 구분 매핑:', { headerRow, labelCol, typeByDate });
+  console.log('[본펀딩] 내부광고 구분 매핑:', { headerRow, labelCol, nextSectionRow, typeByDate });
 
   // CONFIG 폴백: 시트에서 typeByDate 못 만들었으면 고정값 사용
   if (Object.keys(typeByDate).length === 0 && CONFIG.mainInternalAds) {
@@ -876,8 +895,8 @@ function extractMainInternalAds(rows, detected) {
     console.log('[본펀딩] CONFIG 폴백 적용:', typeByDate);
   }
 
-  // 실제 광고 지표 행 찾기
-  for (let r = detected.lastRow + 1; r < rows.length; r++) {
+  // 실제 광고 지표 행 찾기 — detected.lastRow + 1 부터 nextSectionRow 직전까지만!
+  for (let r = detected.lastRow + 1; r < nextSectionRow; r++) {
     const row = rows[r];
     if (!row || !row[0]) continue;
     const dateISO = dateStrParse(row[0]);
@@ -888,7 +907,6 @@ function extractMainInternalAds(rows, detected) {
     // 같은 날짜의 구분 라벨 우선, 없으면 같은 행의 B열 직접 사용 (폴백)
     let typeLabel = typeByDate[dateISO];
     if (!typeLabel && row[1]) {
-      // B열 값이 숫자가 아닌 텍스트라면 구분으로 사용
       const bVal = String(row[1]).trim();
       if (bVal && !/^[\d₩,.\s%]+$/.test(bVal)) {
         typeLabel = bVal;
@@ -910,6 +928,7 @@ function extractMainInternalAds(rows, detected) {
       roas: parsePct(row[12])
     });
   }
+  console.log('[본펀딩] 추출된 내부광고:', ads);
   return ads;
 }
 
@@ -1581,7 +1600,26 @@ function drawMetricChart() {
         if (selectedMetrics.length >= 2) selectedMetrics = [selectedMetrics[1], k];
         else selectedMetrics.push(k);
       }
-      updateContent();
+      // 메트릭 차트와 칩만 다시 그리고, 본펀딩 탭의 일자별 매출 차트는 건드리지 않음
+      const chipsEl = document.getElementById('metric-chips');
+      if (chipsEl) {
+        chipsEl.innerHTML = metricOptionsBySheet[currentSheet].map(k => renderMetricChip(k)).join('');
+      }
+      // 메트릭 카운트 메타 업데이트
+      document.querySelectorAll('.card-meta').forEach(el => {
+        const txt = el.textContent;
+        if (txt.includes('최대 2개 선택')) {
+          el.textContent = `최대 2개 선택 (${selectedMetrics.length}/2)`;
+        }
+      });
+      // 차트 캔버스의 인스턴스만 destroy 후 재생성
+      const canvas = document.getElementById('metric-chart');
+      if (canvas) {
+        // 기존 메트릭 차트 인스턴스 찾아서 제거
+        const existingChart = Chart.getChart(canvas);
+        if (existingChart) existingChart.destroy();
+      }
+      drawMetricChart();
     });
   });
 }
