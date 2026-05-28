@@ -1025,13 +1025,13 @@ function parsePreCreatives(rows) {
   }
 
   const creatives = [
-    { name: '소재 1', blocks: [ c1(ROW.set1) ] },                    // 캠페인1_소재1
-    { name: '소재 2', blocks: [ c1(ROW.set2), c3(ROW.set1) ] },       // 캠페인1_소재2 + 캠페인3_소재1
-    { name: '소재 3', blocks: [ c1(ROW.set3), c3(ROW.set2) ] },       // 캠페인1_소재3 + 캠페인3_소재2
-    { name: '소재 4', blocks: [ c1(ROW.set4), c3(ROW.set3) ] },       // 캠페인1_소재4 + 캠페인3_소재3
-    { name: '소재 5', blocks: [ c2(ROW.set1) ] },                    // 캠페인2_소재1
-    { name: '소재 6', blocks: [ c2(ROW.set2) ] },                    // 캠페인2_소재2
-    { name: '소재 7', blocks: [ c2(ROW.set3) ] }                     // 캠페인2_소재3
+    { name: '소재1 (이미지)', blocks: [ c1(ROW.set1) ] },              // 캠페인1_소재1
+    { name: '소재2 (GIF)', blocks: [ c1(ROW.set2), c3(ROW.set1) ] },   // 캠페인1_소재2 + 캠페인3_소재1
+    { name: '소재3 (GIF)', blocks: [ c1(ROW.set3), c3(ROW.set2) ] },   // 캠페인1_소재3 + 캠페인3_소재2
+    { name: '소재4 (릴스)', blocks: [ c1(ROW.set4), c3(ROW.set3) ] },  // 캠페인1_소재4 + 캠페인3_소재3
+    { name: '소재5 (GIF)', blocks: [ c2(ROW.set1) ] },                 // 캠페인2_소재1
+    { name: '소재6 (GIF)', blocks: [ c2(ROW.set2) ] },                 // 캠페인2_소재2
+    { name: '소재7 (GIF)', blocks: [ c2(ROW.set3) ] }                  // 캠페인2_소재3
   ];
 
   const result = creatives.map((cr, i) => {
@@ -1068,9 +1068,9 @@ function parseMainCreatives(rows) {
   }
 
   const creatives = [
-    { name: '소재 1', agg: mainCreative(ROW.s1) },
-    { name: '소재 2', agg: mainCreative(ROW.s2) },
-    { name: '소재 3', agg: mainCreative(ROW.s3) }
+    { name: '소재1 (이미지)', agg: mainCreative(ROW.s1) },
+    { name: '소재2 (이미지)', agg: mainCreative(ROW.s2) },
+    { name: '소재3 (이미지)', agg: mainCreative(ROW.s3) }
   ];
 
   const result = creatives.map((cr, i) => {
