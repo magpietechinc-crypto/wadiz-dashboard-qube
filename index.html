@@ -104,6 +104,7 @@ table td { padding: 9px 6px; }
     <button data-sheet="summary" class="active">매출 현황</button>
     <button data-sheet="pre">오픈예정</button>
     <button data-sheet="main">본펀딩</button>
+    <button data-sheet="creative">소재별 성과</button>
   </div>
   <div style="position:relative;">
     <button id="date-toggle" class="date-trigger">
@@ -175,7 +176,7 @@ table td { padding: 9px 6px; }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 const SHEET_ID = '17cIEKerwfyAfjEzt0f7-TaK1uS-h2i3IxZDyfVfzNHY';
-const SHEET_GIDS = { summary: '1296007360', pre: '0', main: '1232917433' };
+const SHEET_GIDS = { summary: '1296007360', pre: '0', main: '1232917433', preRaw: '1608166805', mainRaw: '688048950' };
 const AUTO_REFRESH_MINUTES = 0;
 const CONFIG = {
   notifGoal: 1600,
@@ -198,6 +199,22 @@ const CONFIG = {
   mainInternalAds: [
     { date: '2026.05.15', type: '멀티보드' },
     { date: '2026.05.16', type: '멀티보드' }
+  ],
+  // 소재별 성과 탭 이미지 URL (순서대로). 비어있으면 placeholder 표시.
+  // GitHub 저장소의 images/ 폴더에 업로드한 이미지 경로 (상대경로)
+  preCreativeImages: [
+    'images/pre1.png', // 소재 1 (캠페인1_소재1)
+    'images/pre2.png', // 소재 2 (캠페인1_소재2 + 캠페인3_소재1)
+    'images/pre3.png', // 소재 3 (캠페인1_소재3 + 캠페인3_소재2)
+    'images/pre4.png', // 소재 4 (캠페인1_소재4 + 캠페인3_소재3)
+    'images/pre5.png', // 소재 5 (캠페인2_소재1)
+    'images/pre6.png', // 소재 6 (캠페인2_소재2)
+    'images/pre7.png'  // 소재 7 (캠페인2_소재3)
+  ],
+  mainCreativeImages: [
+    'images/main1.png', // 소재 1
+    'images/main2.png', // 소재 2
+    'images/main3.png'  // 소재 3
   ]
 };
 
@@ -319,6 +336,8 @@ function phaseRange(sheet) {
   if (sheet === 'summary') return { start: data.mainStartIdx, end: data.mainEndIdx, label: '본펀딩 기간' };
   if (sheet === 'pre') return { start: data.preStartIdx, end: data.preEndIdx, label: '오픈예정 기간' };
   if (sheet === 'main') return { start: data.mainStartIdx, end: data.mainEndIdx, label: '본펀딩 기간' };
+  if (sheet === 'creative') return { start: data.preStartIdx, end: data.mainEndIdx, label: '전체 기간' };
+  return { start: data.mainStartIdx, end: data.mainEndIdx, label: '본펀딩 기간' };
 }
 
 let cbCounter = 0;
@@ -932,15 +951,156 @@ function extractMainInternalAds(rows, detected) {
   return ads;
 }
 
+// ============================================================
+// 소재별 성과 파싱
+// 로우 데이터 시트의 "총합계" 행에서 노출/클릭/전환/소진 등을 읽음
+// 기존 loadGViz는 t.cols를 rows[0]에 추가하므로, 진단도구(cols 미포함) 행번호 + 1 = 코드 rows 인덱스
+// ============================================================
+
+// 한 블록(소재)의 총합계 행에서 지표 추출. baseCol부터 9칸: 소진,노출,클릭,(CTR),CPM,CPC,CPL,전환수,전환율
+// 단, 블록마다 헤더가 달라 CTR 위치가 다르므로 노출/클릭/전환/소진만 위치로 읽고 비율은 재계산
+function readCreativeBlock(rows, totalRowIdx, baseCol, layout) {
+  // layout: { spend, imp, click, conv, convRev, roas } 각 항목의 baseCol 기준 오프셋
+  const row = rows[totalRowIdx];
+  if (!row) return null;
+  const get = (off) => off == null ? 0 : parseNum(row[baseCol + off]);
+  return {
+    spend: get(layout.spend),
+    impressions: get(layout.imp),
+    clicks: get(layout.click),
+    conversions: get(layout.conv),
+    convRevenue: layout.convRev != null ? get(layout.convRev) : 0
+  };
+}
+
+// 여러 블록을 합산
+function sumCreativeBlocks(blocks) {
+  const acc = { spend:0, impressions:0, clicks:0, conversions:0, convRevenue:0 };
+  blocks.forEach(b => {
+    if (!b) return;
+    acc.spend += b.spend;
+    acc.impressions += b.impressions;
+    acc.clicks += b.clicks;
+    acc.conversions += b.conversions;
+    acc.convRevenue += b.convRevenue;
+  });
+  return acc;
+}
+
+// 오픈예정 소재 7개 파싱
+// 진단 기준 총합계 행: 소재1세트=R44, 소재2세트=R68, 소재3세트=R90, 소재4세트=R112
+// 코드 rows 인덱스 = 진단행 + 1
+// 캠페인1 블록 baseCol=1 (논타겟), 캠페인2 블록 baseCol=24, 캠페인3 블록 baseCol=37
+function parsePreCreatives(rows) {
+  if (!rows || rows.length === 0) return [];
+  console.log('[소재-오픈예정] 파싱 시작, 총 행:', rows.length);
+
+  // 캠페인1: 논타겟(baseCol 1) + 리타겟(baseCol 10) 합산해야 정확하나,
+  // 사용자 요청은 "캠페인1_소재N" 전체이므로 논타겟+리타겟 둘 다 합산
+  // 캠페인1 레이아웃: 1소진 2노출 3클릭 4CTR 5CPM 6CPC 7CPL 8전환수 9전환율
+  const c1Layout = { spend:0, imp:1, click:2, conv:7 };       // baseCol 기준 오프셋
+  // 캠페인2 레이아웃(col 24~): 24소진 25노출 26클릭 27CPM 28CPC 29CPL 30전환수 31전환율 (CTR 없음)
+  const c2Layout = { spend:0, imp:1, click:2, conv:6 };
+  // 캠페인3 레이아웃(col 37~): 37소진 38노출 39클릭 40CTR 41CPM 42CPC 43CPL 44전환수 45전환율
+  const c3Layout = { spend:0, imp:1, click:2, conv:7 };
+
+  // 총합계 행 인덱스 (코드 rows 기준 = 진단 + 1)
+  const ROW = { set1: 45, set2: 69, set3: 91, set4: 113 };
+
+  // 캠페인1 소재: 논타겟(baseCol 1) + 리타겟(baseCol 10)
+  function c1(rowIdx) {
+    const nontarget = readCreativeBlock(rows, rowIdx, 1, c1Layout);
+    const retarget  = readCreativeBlock(rows, rowIdx, 10, c1Layout);
+    return sumCreativeBlocks([nontarget, retarget]);
+  }
+  // 캠페인2 소재: baseCol 24 (리타겟 단일 블록)
+  function c2(rowIdx) {
+    return readCreativeBlock(rows, rowIdx, 24, c2Layout);
+  }
+  // 캠페인3 소재: baseCol 37(논타겟) + 47(리타겟)
+  function c3(rowIdx) {
+    const nontarget = readCreativeBlock(rows, rowIdx, 37, c3Layout);
+    const retarget  = readCreativeBlock(rows, rowIdx, 47, c3Layout);
+    return sumCreativeBlocks([nontarget, retarget]);
+  }
+
+  const creatives = [
+    { name: '소재 1', blocks: [ c1(ROW.set1) ] },                    // 캠페인1_소재1
+    { name: '소재 2', blocks: [ c1(ROW.set2), c3(ROW.set1) ] },       // 캠페인1_소재2 + 캠페인3_소재1
+    { name: '소재 3', blocks: [ c1(ROW.set3), c3(ROW.set2) ] },       // 캠페인1_소재3 + 캠페인3_소재2
+    { name: '소재 4', blocks: [ c1(ROW.set4), c3(ROW.set3) ] },       // 캠페인1_소재4 + 캠페인3_소재3
+    { name: '소재 5', blocks: [ c2(ROW.set1) ] },                    // 캠페인2_소재1
+    { name: '소재 6', blocks: [ c2(ROW.set2) ] },                    // 캠페인2_소재2
+    { name: '소재 7', blocks: [ c2(ROW.set3) ] }                     // 캠페인2_소재3
+  ];
+
+  const result = creatives.map((cr, i) => {
+    const agg = sumCreativeBlocks(cr.blocks);
+    const ctr = agg.impressions ? (agg.clicks / agg.impressions * 100) : null;
+    const cpl = agg.conversions ? (agg.spend / agg.conversions) : null;
+    const convRate = agg.clicks ? (agg.conversions / agg.clicks * 100) : null;
+    return {
+      name: cr.name,
+      imageIndex: i,  // 이미지 순서
+      ctr, cpl, convRate,
+      raw: agg
+    };
+  });
+  console.log('[소재-오픈예정] 결과:', result);
+  return result;
+}
+
+// 본펀딩 소재 3개 파싱
+// 진단 기준 총합계 행: 소재1=R17, 소재2=R34, 소재3=R51 → 코드 rows = 진단 + 1
+// 본펀딩 레이아웃(col 1~11): 1소진 2노출 3클릭 4CTR 5CPM 6CPC 7CPA 8전환수 9전환율 10전환매출 11ROAS
+// 논타겟(baseCol 1) + 리타겟(baseCol 12) 합산
+function parseMainCreatives(rows) {
+  if (!rows || rows.length === 0) return [];
+  console.log('[소재-본펀딩] 파싱 시작, 총 행:', rows.length);
+
+  const layout = { spend:0, imp:1, click:2, conv:7, convRev:9 };  // baseCol 기준
+  const ROW = { s1: 18, s2: 35, s3: 52 };  // 진단 R17/R34/R51 + 1
+
+  function mainCreative(rowIdx) {
+    const nontarget = readCreativeBlock(rows, rowIdx, 1, layout);
+    const retarget  = readCreativeBlock(rows, rowIdx, 12, layout);
+    return sumCreativeBlocks([nontarget, retarget]);
+  }
+
+  const creatives = [
+    { name: '소재 1', agg: mainCreative(ROW.s1) },
+    { name: '소재 2', agg: mainCreative(ROW.s2) },
+    { name: '소재 3', agg: mainCreative(ROW.s3) }
+  ];
+
+  const result = creatives.map((cr, i) => {
+    const agg = cr.agg;
+    const ctr = agg.impressions ? (agg.clicks / agg.impressions * 100) : null;
+    const cpa = agg.conversions ? (agg.spend / agg.conversions) : null;
+    const convRate = agg.clicks ? (agg.conversions / agg.clicks * 100) : null;
+    const roas = agg.spend ? (agg.convRevenue / agg.spend * 100) : null;
+    return {
+      name: cr.name,
+      imageIndex: i,
+      ctr, cpa, convRate, convRevenue: agg.convRevenue, roas,
+      raw: agg
+    };
+  });
+  console.log('[소재-본펀딩] 결과:', result);
+  return result;
+}
+
 async function loadAll() {
   isLoading = true;
   const refreshBtn = document.getElementById('refresh-btn');
   refreshBtn.classList.add('loading');
   try {
-    const [summaryRows, preRows, mainRows] = await Promise.all([
+    const [summaryRows, preRows, mainRows, preRawRows, mainRawRows] = await Promise.all([
       loadGViz(SHEET_GIDS.summary).catch(e => { console.warn('summary load error:', e); return null; }),
       loadGViz(SHEET_GIDS.pre).catch(e => { console.warn('pre load error:', e); return null; }),
-      loadGViz(SHEET_GIDS.main).catch(e => { console.warn('main load error:', e); return null; })
+      loadGViz(SHEET_GIDS.main).catch(e => { console.warn('main load error:', e); return null; }),
+      loadGViz(SHEET_GIDS.preRaw).catch(e => { console.warn('preRaw load error:', e); return null; }),
+      loadGViz(SHEET_GIDS.mainRaw).catch(e => { console.warn('mainRaw load error:', e); return null; })
     ]);
 
     const preData = parsePreSheet(preRows);
@@ -980,6 +1140,9 @@ async function loadAll() {
     data.preInternalAds = preData ? extractPreInternalAds(preData.rawRows, preData.detectedRows) : [];
     data.mainTarget = mainData ? fillMainTarget(mainData.rawRows, mainData.detectedRows, data.dates.length) : emptyTarget('main');
     data.mainInternalAds = mainData ? extractMainInternalAds(mainData.rawRows, mainData.detectedRows) : [];
+    // 소재별 성과 데이터
+    data.preCreatives = preRawRows ? parsePreCreatives(preRawRows) : [];
+    data.mainCreatives = mainRawRows ? parseMainCreatives(mainRawRows) : [];
 
     data.summary = summaryData || {totalFunding:0, achievement:0, currentProfit:0, profitRate:0, totalAdSpend:0, unitsSold:0, currentROAS:0};
     if (mainData) {
@@ -1492,6 +1655,80 @@ function renderMain() {
   `;
 }
 
+// 소재별 성과 탭
+function renderCreatives() {
+  const pre = data.preCreatives || [];
+  const main = data.mainCreatives || [];
+
+  // 소재 카드 하나 렌더 (이미지 위 + 지표 표 아래)
+  function creativeCard(c, imageUrl, metrics) {
+    const imgHtml = imageUrl
+      ? `<img src="${imageUrl}" alt="${c.name}" style="width:100%; display:block;">`
+      : `<div style="display:flex; align-items:center; justify-content:center; height:200px; color:var(--text-secondary); font-size:12px; background:var(--bg-secondary);"><i class="ti ti-photo" style="font-size:24px; opacity:0.4;"></i></div>`;
+
+    const rows = metrics.map(m => `
+      <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:0.5px solid var(--border-tertiary);">
+        <span style="color:var(--text-secondary); font-size:12px;">${m.label}</span>
+        <span style="color:var(--text-primary); font-size:13px; font-weight:600;">${m.value}</span>
+      </div>
+    `).join('');
+
+    return `
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="width:100%; background:var(--bg-secondary); border-bottom:0.5px solid var(--border-tertiary);">
+          ${imgHtml}
+        </div>
+        <div style="padding:14px 16px;">
+          <div style="font-size:14px; font-weight:600; color:var(--text-primary); margin-bottom:8px;">${c.name}</div>
+          ${rows}
+        </div>
+      </div>
+    `;
+  }
+
+  const preCards = pre.map((c, i) => creativeCard(
+    c,
+    (CONFIG.preCreativeImages && CONFIG.preCreativeImages[i]) || '',
+    [
+      { label: 'CTR', value: c.ctr != null ? c.ctr.toFixed(2) + '%' : '-' },
+      { label: 'CPL', value: c.cpl != null ? fmt.won(c.cpl) : '-' },
+      { label: '광고 전환율', value: c.convRate != null ? c.convRate.toFixed(1) + '%' : '-' }
+    ]
+  )).join('');
+
+  const mainCards = main.map((c, i) => creativeCard(
+    c,
+    (CONFIG.mainCreativeImages && CONFIG.mainCreativeImages[i]) || '',
+    [
+      { label: 'CTR', value: c.ctr != null ? c.ctr.toFixed(2) + '%' : '-' },
+      { label: 'CPA', value: c.cpa != null ? fmt.won(c.cpa) : '-' },
+      { label: '전환율', value: c.convRate != null ? c.convRate.toFixed(1) + '%' : '-' },
+      { label: '전환 매출', value: fmt.wonShort(c.convRevenue) },
+      { label: 'ROAS', value: c.roas != null ? c.roas.toFixed(0) + '%' : '-' }
+    ]
+  )).join('');
+
+  return `
+    <h2 class="page-title">소재별 성과</h2>
+
+    <div class="card-header" style="margin-bottom:12px;">
+      <span class="card-title"><i class="ti ti-bell" style="font-size:14px; color:var(--accent-primary);"></i>오픈예정 소재</span>
+      <span class="card-meta">전체 기간 누적</span>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px; margin-bottom:28px;">
+      ${preCards || '<div style="color:var(--text-secondary); font-size:13px; padding:20px;">데이터를 불러오는 중이거나 없습니다.</div>'}
+    </div>
+
+    <div class="card-header" style="margin-bottom:12px;">
+      <span class="card-title"><i class="ti ti-rocket" style="font-size:14px; color:var(--accent-primary);"></i>본펀딩 소재</span>
+      <span class="card-meta">전체 기간 누적</span>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
+      ${mainCards || '<div style="color:var(--text-secondary); font-size:13px; padding:20px;">데이터를 불러오는 중이거나 없습니다.</div>'}
+    </div>
+  `;
+}
+
 function renderInternalAds(sheet) {
   const ads = sheet === 'pre' ? data.preInternalAds : data.mainInternalAds;
   const isEmpty = !ads || ads.length === 0;
@@ -1798,6 +2035,7 @@ function updateContent() {
   const c = document.getElementById('content');
   if (currentSheet === 'summary') { c.innerHTML = renderSummary(); drawSummaryCharts(); }
   else if (currentSheet === 'pre') { c.innerHTML = renderPre(); drawMetricChart(); drawNotifConversionChart(); }
+  else if (currentSheet === 'creative') { c.innerHTML = renderCreatives(); }
   else { c.innerHTML = renderMain(); drawMetricChart(); drawMainDailyChart(); }
 }
 
@@ -1814,6 +2052,7 @@ document.querySelectorAll('#sheet-tabs button').forEach(btn => {
     document.querySelectorAll('#sheet-tabs button').forEach(b => b.classList.toggle('active', b.dataset.sheet === currentSheet));
     if (currentSheet === 'pre') selectedMetrics = ['spend','cpl'];
     else if (currentSheet === 'main') selectedMetrics = ['spend','roas'];
+    else if (currentSheet === 'creative') selectedMetrics = [];
     else selectedMetrics = ['spend','cpl'];
 
     // 사용자 선택이 있으면 복원, 없으면 phase 기본값
